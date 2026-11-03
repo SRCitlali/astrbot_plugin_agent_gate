@@ -1,0 +1,7 @@
+name: astrbot_plugin_agent_gate
+display_name: AgentGate · 能力之门
+desc: 🔒 只有白名单里的人能用这台机器人：名单外不分对话还是指令，一律拦下并随机回一句自定义文案；名单内的人正常使用，但聊多了会累，精力见底后改为随机回一句话、随时间恢复。新增「告状与冷静期」：被辱骂/人身攻击时主 LLM 可调用 report_harassment 工具，记录证据、@ 或私聊报告给你，并让对方进入一段冷静期（期间一律不回 LLM）；管理员也可用 /冷静 手动封人。（要整体停用本插件，请用 AstrBot 的插件开关。）
+short_desc: 🔒 AgentGate - 白名单控门 | 名单外连指令一起拦 | 名单内精力节制 | 被骂会告状、会让人冷静
+version: 2.2.7
+author: Citlali
+astrbot_version: ">=4.5.7"

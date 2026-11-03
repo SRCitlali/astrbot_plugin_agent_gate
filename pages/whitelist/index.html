@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AgentGate · 会话与白名单</title>
+    <!--
+      数据来源：同目录下的 data.js（由 astrbot_plugin_agent_gate 后端自动生成）。
+
+      AstrBot 4.29 的插件视图（Plugin View）机制，页面地址形如：
+        /api/v1/plugins/<插件>/views/<视图>/_t/<令牌>/
+      令牌写在**路径里**，所以下面的 ./data.js 用相对地址就自动继承令牌和鉴权
+      （框架只对视图 HTML 做主题处理 + bridge 注入，不重写其它相对地址）。
+
+      执行插件代码的接口在 /api/v1/plugins/extensions/<插件>/<路由>，
+      要求 Authorization: Bearer <Dashboard JWT>。页面 URL 里这个 page_session
+      令牌本身就是同一秘钥签的 HS256 JWT，而 require_plugin_scope → require_scope
+      只校验签名/过期时间/username，不校验 token_type，所以能直接当 Bearer 用。
+
+      写白名单首选 bridge（window.AstrBotPluginView.apiPost）：请求和响应都由
+      父页面转发，不依赖上面的令牌；bridge 不可用时再退化为页面直连。
+    -->
+    <script src="/api/plugin/page/bridge-sdk.js"></script>
+    <style>
+      :root {
+        --bg: #f5f6f8;
+        --card: #ffffff;
+        --border: #e3e6ea;
+        --text: #1f2328;
+        --muted: #6b7280;
+        --accent: #4f7cff;
+        --ok: #1f9d55;
+        --warn: #b7791f;
+        --danger: #d64545;
+        --th: #f0f2f5;
+      }
+      [data-theme="dark"] {
+        --bg: #17181c;
+        --card: #1f2126;
+        --border: #33363d;
+        --text: #e6e8eb;
+        --muted: #9aa1ac;
+        --accent: #6f97ff;
+        --ok: #4ade80;
+        --warn: #f0c364;
+        --danger: #ff7b7b;
+        --th: #262930;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 16px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      .head {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+      }
+      h1 { font-size: 17px; margin: 0; font-weight: 600; }
+      .muted { color: var(--muted); }
+      .grow { flex: 1; }
+      button {
+        font: inherit;
+        border: 1px solid var(--border);
+        background: var(--card);
+        color: var(--text);
+        border-radius: 6px;
+        padding: 5px 12px;
+        cursor: pointer;
+      }
+      button:hover { border-color: var(--accent); color: var(--accent); }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button.primary:hover { opacity: .9; color: #fff; }
+      button.danger:hover { border-color: var(--danger); color: var(--danger); }
+      button:disabled { opacity: .5; cursor: not-allowed; }
+      input {
+        font: inherit;
+        background: var(--card);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 6px 10px;
+        min-width: 300px;
+        flex: 1;
+      }
+      input:focus { outline: none; border-color: var(--accent); }
+      .panel {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 12px;
+      }
+      .banner {
+        border-radius: 8px;
+        padding: 9px 12px;
+        margin-bottom: 12px;
+        font-size: 13px;
+        border: 1px solid var(--border);
+        background: var(--card);
+        display: none;
+      }
+      .banner.err { border-color: var(--danger); color: var(--danger); }
+      .banner.warn { border-color: var(--warn); color: var(--warn); }
+      .banner .detail {
+        color: var(--muted);
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+        font-size: 11px;
+        white-space: pre-wrap;
+        word-break: break-all;
+        margin-top: 4px;
+      }
+      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td {
+        border-bottom: 1px solid var(--border);
+        padding: 8px 10px;
+        text-align: left;
+        vertical-align: middle;
+        white-space: nowrap;
+      }
+      th { background: var(--th); font-weight: 600; font-size: 13px; }
+      tbody tr:hover { background: var(--th); }
+      td.name { white-space: normal; max-width: 240px; }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+      }
+      .tag {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: 999px;
+        font-size: 12px;
+        border: 1px solid var(--border);
+      }
+      .tag.on { color: var(--ok); border-color: var(--ok); }
+      .tag.off { color: var(--muted); }
+      .tag.admin { color: var(--accent); border-color: var(--accent); }
+      .tag.owner { color: var(--warn); border-color: var(--warn); }
+      .tag.bot { color: var(--accent); border-color: var(--accent); }
+      .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+      .chip {
+        border: 1px solid var(--border);
+        background: var(--card);
+        color: var(--muted);
+        border-radius: 999px;
+        padding: 3px 10px;
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .chip:hover { border-color: var(--accent); color: var(--accent); }
+      .chip.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+      .chip.off { border-style: dashed; }
+      .dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--danger);
+        margin-right: 6px;
+        vertical-align: middle;
+      }
+      .dot.info { background: var(--warn); }
+      .err.info { color: var(--warn); }
+      td.bot { white-space: normal; min-width: 96px; }
+      .state { padding: 18px; text-align: center; color: var(--muted); }
+      .err { color: var(--danger); }
+      .note { font-size: 12px; color: var(--muted); margin-top: 10px; }
+      .scroll { overflow-x: auto; }
+      code { background: var(--th); padding: 1px 5px; border-radius: 4px; }
+      details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+      #log { white-space: pre-wrap; font-size: 11px; max-height: 240px; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <div class="head">
+      <h1>AgentGate · 会话与白名单</h1>
+      <span class="muted grow" id="summary">加载中…</span>
+      <button id="refresh">刷新</button>
+    </div>
+
+    <div class="banner" id="banner">
+      <span id="bannerText"></span>
+      <div class="detail" id="bannerDetail"></div>
+    </div>
+
+    <div class="panel">
+      <div class="row">
+        <input id="newid" placeholder="粘贴会话 openID（群的 group_openid 或私聊的 user_openid）" />
+        <button class="primary" id="addBtn">加入白名单</button>
+      </div>
+      <div class="note">
+        白名单为空 = 所有人都能用机器人；一旦有内容，就只有名单里的人 / 群能用（AgentGate 的规则）。
+        群里填 <code>group_openid</code>，私聊填对方 <code>user_openid</code>，两种都写进同一张白名单。
+      </div>
+    </div>
+
+    <div class="panel scroll">
+      <div class="chips" id="botFilterBox"></div>
+      <div class="note" style="margin:0 0 10px">
+        同一个群被两个机器人加入时，会有两个不同的 openID —— 各自只能由加入它的那个机器人读信息；
+        某一行读不到群名时，先看「机器人」列是谁，再看下面的原因。
+      </div>
+      <div id="state" class="state">加载中…</div>
+      <table id="table" style="display: none">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>会话名称</th>
+            <th>机器人</th>
+            <th>消息数</th>
+            <th>最后活跃</th>
+            <th>机器人接收消息</th>
+            <th>机器人角色</th>
+            <th>主动推送</th>
+            <th>群成员数</th>
+            <th>会话 openID</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="note" id="foot"></div>
+
+    <div class="panel">
+      <details>
+        <summary>诊断信息（出问题时展开截图）</summary>
+        <div class="mono" id="diag" style="white-space:pre-wrap;font-size:12px;margin-top:8px"></div>
+        <div class="mono" id="log" style="margin-top:8px"></div>
+      </details>
+    </div>
+
+    <!-- 数据文件：框架会把 src 改写成 /api/plugin/page/content/.../data.js?asset_token=... -->
+    <script src="./data.js"></script>
+
+    <script>
+      var LOG = [];
+      function log() {
+        var d = new Date();
+        var ts =
+          String(d.getHours()).padStart(2, "0") + ":" +
+          String(d.getMinutes()).padStart(2, "0") + ":" +
+          String(d.getSeconds()).padStart(2, "0") + "." +
+          String(d.getMilliseconds()).padStart(3, "0");
+        LOG.push(ts + "  " + Array.prototype.join.call(arguments, " "));
+        if (LOG.length > 60) LOG.shift();
+        var box = document.getElementById("log");
+        if (box) box.textContent = LOG.join("\n");
+      }
+
+      // ── 从页面地址里认出「插件名」和「页面令牌」──
+      // 新版视图：/api/v1/plugins/<插件>/views/<视图>/_t/<令牌>/...
+      // 旧版页面：/api/plugin/page/content/<插件>/<视图>/...
+      function pluginName() {
+        var path = String(location.pathname || "");
+        var patterns = [
+          /\/api\/v1\/plugins\/([^/]+)\/views\//,
+          /\/api\/v1\/plugins\/([^/]+)\/pages\//,
+          /\/api\/plugin\/page\/content\/([^/]+)\//,
+        ];
+        for (var i = 0; i < patterns.length; i += 1) {
+          var m = path.match(patterns[i]);
+          if (m) return decodeURIComponent(m[1]);
+        }
+        return "";
+      }
+
+      function pageToken() {
+        var fromQuery = new URLSearchParams(location.search).get("asset_token") || "";
+        if (fromQuery) return fromQuery;
+        var m = String(location.pathname || "").match(/\/_t\/([^/]+)\//);
+        return m ? decodeURIComponent(m[1]) : "";
+      }
+
+      var DIAG = {
+        dataUrl: "",
+        loads: 0,
+        lastError: "",
+        origin: String(location.origin),
+        // page_session 令牌（同一秘钥签的 HS256 JWT，插件接口认它）
+        token: pageToken(),
+        plugin: pluginName(),
+        apiBase: "",
+        hasPayload: false,
+        // 写白名单的通道与结果，出问题一眼能看出来
+        bridgeState: "",
+        bridgeObject: "",
+      };
+
+      function renderDiag() {
+        var box = document.getElementById("diag");
+        if (!box) return;
+        box.textContent = [
+          "页面 origin   : " + DIAG.origin,
+          "当前数据地址  : " + DIAG.dataUrl,
+          "插件名        : " + (DIAG.plugin || "没认出来（页面地址不对）"),
+          "写入接口      : " + (DIAG.apiBase ? DIAG.apiBase + "/whitelist" : "未生成"),
+          "asset_token   : " + (DIAG.token ? DIAG.token.slice(0, 24) + "…（长度 " + DIAG.token.length + "）" : "无"),
+          "拿到数据了吗  : " + (DIAG.hasPayload ? "是" : "否"),
+          "加载次数      : " + DIAG.loads,
+          "bridge 对象   : " + (DIAG.bridgeObject || "未检测"),
+          "bridge 写操作 : " + (DIAG.bridgeState || "还没点过"),
+          "最后一次错误  : " + (DIAG.lastError || "无"),
+        ].join("\n");
+      }
+
+      var tbody = document.getElementById("tbody");
+      var table = document.getElementById("table");
+      var stateBox = document.getElementById("state");
+      var summary = document.getElementById("summary");
+      var foot = document.getElementById("foot");
+      var newid = document.getElementById("newid");
+      var banner = document.getElementById("banner");
+      var bannerText = document.getElementById("bannerText");
+      var bannerDetail = document.getElementById("bannerDetail");
+
+      function esc(text) {
+        return String(text == null ? "" : text)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function shortId(id) {
+        var s = String(id || "");
+        return s.length > 14 ? s.slice(0, 6) + "…" + s.slice(-4) : s;
+      }
+
+      function showState(text, isError) {
+        table.style.display = "none";
+        stateBox.style.display = "block";
+        stateBox.className = isError ? "state err" : "state";
+        stateBox.textContent = text;
+      }
+
+      function showBanner(text, isError, detail) {
+        banner.style.display = "block";
+        banner.className = "banner " + (isError ? "err" : "warn");
+        bannerText.textContent = text;
+        bannerDetail.textContent = detail || "";
+      }
+
+      function hideBanner() {
+        banner.style.display = "none";
+      }
+
+      // ── 机器人筛选（纯前端，数据来自 data.js 的 bots / 每行 platform_id）──
+      var BOT_FILTER_KEY = "agentgate.botFilter";
+      var botFilter = "";
+      try { botFilter = sessionStorage.getItem(BOT_FILTER_KEY) || ""; } catch (e) { botFilter = ""; }
+
+      function botList(data) {
+        var bots = (data && data.bots) || [];
+        if (bots.length) return bots;
+        // 老版 data.js 没有 bots 段时，从会话里凑一份，页面不至于空着
+        var seen = {};
+        ((data && data.sessions) || []).forEach(function (row) {
+          var pid = String(row.platform_id || "");
+          if (!pid || seen[pid]) return;
+          seen[pid] = true;
+          bots.push({ platform_id: pid, label: pid, enabled: true, sessions: 0 });
+        });
+        return bots;
+      }
+
+      function shortBot(label) {
+        var s = String(label || "");
+        return s.length > 12 ? s.slice(0, 11) + "…" : s;
+      }
+
+      function summaryText(data, rows) {
+        var s = (data && data.summary) || {};
+        var bots = botList(data);
+        var disabled = bots.filter(function (b) { return b.enabled === false; }).length;
+        var text = "共 " + (s.total || rows.length) + " 个会话";
+        if (bots.length) {
+          text += " · " + bots.length + " 个机器人" + (disabled ? "（" + disabled + " 个未启用）" : "");
+        }
+        text += " · 白名单 " + (s.whitelisted == null ? 0 : s.whitelisted) + " 个";
+        if (botFilter) text += " · 当前只看「" + shortBot(botFilter) + "」";
+        return text;
+      }
+
+      function renderChips(data) {
+        var box = document.getElementById("botFilterBox");
+        if (!box) return;
+        var bots = botList(data);
+        var rows = (data && data.sessions) || [];
+        var counts = { "": rows.length };
+        rows.forEach(function (row) {
+          var pid = String(row.platform_id || "");
+          if (pid) counts[pid] = (counts[pid] || 0) + 1;
+        });
+        function chip(pid, label, count, enabled) {
+          var cls = "chip" + (String(pid) === String(botFilter) ? " active" : "") + (enabled ? "" : " off");
+          return '<span class="' + cls + '" data-pid="' + esc(pid) + '" title="' +
+            esc(label) + '（' + count + ' 个会话）">' + esc(label) + " (" + count + ")</span>";
+        }
+        var html = chip("", "全部", counts[""], true);
+        bots.forEach(function (bot) {
+          var pid = String(bot.platform_id || "");
+          var label = String(bot.label || pid) + (bot.enabled === false ? "·未启用" : "");
+          html += chip(pid, label, counts[pid] || 0, bot.enabled !== false);
+        });
+        box.innerHTML = html;
+        Array.prototype.forEach.call(box.querySelectorAll(".chip"), function (el) {
+          el.onclick = function () {
+            botFilter = el.getAttribute("data-pid") || "";
+            try { sessionStorage.setItem(BOT_FILTER_KEY, botFilter); } catch (e) { /* 忽略 */ }
+            render(window.__GATE_PAYLOAD__ || {});
+          };
+        });
+      }
+
+      function roleTag(row) {
+        var cls = "tag";
+        if (row.role_text === "管理员") cls += " admin";
+        else if (row.role_text === "群主") cls += " owner";
+        return '<span class="' + cls + '">' + esc(row.role_text) + "</span>";
+      }
+
+      function proactiveTag(row) {
+        if (row.proactive_text === "已开启") {
+          return '<span class="tag on">已开启</span>';
+        }
+        return '<span class="tag off">' + esc(row.proactive_text) + "</span>";
+      }
+
+      function botCell(row) {
+        if (!row.platform_id) return '<span class="tag off">未登记</span>';
+        var html = '<span class="tag bot" title="' + esc(row.platform_id) + '">' +
+          esc(shortBot(row.bot_label || row.platform_id)) + "</span>";
+        if (row.bot_enabled === false) {
+          html += ' <span class="tag off" title="该机器人现在没有启用或已被删除，读不到群信息">未启用</span>';
+        }
+        return html;
+      }
+
+      function errorHtml(row) {
+        if (!row.error) return "";
+        // bot_unavailable / not_in_group 是「信息」，不是故障：灰黄显示、原始报错放 title
+        var info = row.error_kind === "bot_unavailable" || row.error_kind === "not_in_group";
+        var title = row.error_detail ? ' title="' + esc(row.error_detail) + '"' : "";
+        return '<div class="err' + (info ? " info" : "") + '"' + title +
+          ' style="font-size:12px;white-space:normal">' +
+          '<span class="dot' + (info ? " info" : "") + '"></span>' + esc(row.error) + "</div>";
+      }
+
+      function render(data) {
+        var all = (data && data.sessions) || [];
+        renderChips(data);
+        var rows = all.filter(function (row) {
+          return !botFilter || String(row.platform_id || "") === botFilter;
+        });
+        tbody.innerHTML = "";
+        if (!rows.length) {
+          var why = all.length
+            ? "当前筛选下没有会话（点「全部」查看所有机器人）"
+            : "还没发现任何会话。机器人收到一条消息后这里就会出现。";
+          showState(why, false);
+          summary.textContent = summaryText(data, all);
+          log("render 0 行（筛选=" + (botFilter || "全部") + "）");
+          return;
+        }
+        stateBox.style.display = "none";
+        table.style.display = "";
+
+        rows.forEach(function (row) {
+          var tr = document.createElement("tr");
+          var nameHtml = esc(row.name);
+          if (row.kind === "private") nameHtml += ' <span class="tag off">私聊</span>';
+          if (row.kind === "unknown") nameHtml += ' <span class="tag off">未登记</span>';
+          if (row.name_hint) {
+            nameHtml += ' <span class="tag off" title="QQ 单聊事件不下发昵称，这个名字是从群里见过的同名 openid 借来的">群里同名</span>';
+          }
+          if (row.whitelisted) nameHtml += ' <span class="tag on">白名单</span>';
+          nameHtml += errorHtml(row);
+
+          tr.innerHTML =
+            "<td>" + row.index + "</td>" +
+            '<td class="name">' + nameHtml + "</td>" +
+            '<td class="bot">' + botCell(row) + "</td>" +
+            "<td>" + esc(row.msg_count == null ? "—" : row.msg_count) + "</td>" +
+            "<td>" + esc(row.last_seen_text || "—") + "</td>" +
+            "<td>" + esc(row.recv_text) + "</td>" +
+            "<td>" + roleTag(row) + "</td>" +
+            "<td>" + proactiveTag(row) + "</td>" +
+            "<td>" + esc(row.member_count == null ? "—" : row.member_count) + "</td>" +
+            '<td class="mono" title="' + esc(row.openid) + '">' + esc(shortId(row.openid)) + "</td>" +
+            "<td></td>";
+
+          var cell = tr.lastChild;
+          var btn = document.createElement("button");
+          if (row.whitelisted) {
+            btn.textContent = "从白名单中移除";
+            btn.className = "danger";
+            btn.onclick = function () { mutate("remove", row.openid, btn); };
+          } else {
+            btn.textContent = "加入白名单";
+            btn.className = "primary";
+            btn.onclick = function () { mutate("add", row.openid, btn); };
+          }
+          cell.appendChild(btn);
+          tbody.appendChild(tr);
+        });
+
+        summary.textContent = summaryText(data, rows);
+        log("render " + rows.length + " 行 OK（筛选=" + (botFilter || "全部") + "）");
+      }
+
+      // ── 重新加载 data.js（同目录静态文件，走框架的受保护资产通道）──
+      function dataUrl(fresh) {
+        var url = new URL("./data.js", location.href);
+        if (fresh) url.searchParams.set("t", String(Date.now()));
+        if (DIAG.token) url.searchParams.set("asset_token", DIAG.token);
+        return url.toString();
+      }
+
+      function loadData() {
+        DIAG.loads += 1;
+        DIAG.dataUrl = dataUrl(true);
+        log("加载 data.js 第 " + DIAG.loads + " 次");
+        renderDiag();
+        return new Promise(function (resolve, reject) {
+          var el = document.createElement("script");
+          var timer = setTimeout(function () {
+            reject(new Error("data.js 10 秒没加载完"));
+          }, 10000);
+          el.onload = function () {
+            clearTimeout(timer);
+            var payload = window.__GATE_PAYLOAD__;
+            if (!payload) {
+              reject(new Error("data.js 加载了但没有数据（文件可能是空的）"));
+              return;
+            }
+            DIAG.hasPayload = true;
+            resolve(payload);
+          };
+          el.onerror = function () {
+            clearTimeout(timer);
+            reject(new Error("data.js 加载失败（HTTP 层没过，多半是 asset_token 过期了，重新点开插件页面即可）"));
+          };
+          el.src = DIAG.dataUrl;
+          document.head.appendChild(el);
+        });
+      }
+
+      // ── 白名单写操作 ──
+      //
+      // 通道一（首选）：页面直连插件接口
+      //   POST /api/v1/plugins/extensions/<插件>/whitelist  {action, id}
+      //   Authorization: Bearer <页面 URL 里的 page_session 令牌>
+      //   它在框架里就是一枚同一秘钥签的 HS256 JWT，require_plugin_scope →
+      //   require_scope 只校验签名 / 过期 / username，不校验 token_type
+      //   （dashboard/api/auth.py），所以插件接口直接认它（服务器实测 200）。
+      //
+      // 通道二（兜底）：window.AstrBotPluginView.apiPost("whitelist", {...})
+      //   请求由父页面转发、自带登录态，响应也会回传。
+      //
+      // 插件 `_api_whitelist` 返回的 data.whitelist 是写后的完整名单，
+      // 页面据此立即更新表格，不用再赌 data.js 什么时候重写完。
+      function pluginApiBase() {
+        var name = DIAG.plugin || pluginName();
+        if (!name) return "";
+        return "/api/v1/plugins/extensions/" + encodeURIComponent(name);
+      }
+
+      function withTimeout(promise, ms, message) {
+        return new Promise(function (resolve, reject) {
+          var timer = setTimeout(function () { reject(new Error(message)); }, ms);
+          promise.then(
+            function (value) { clearTimeout(timer); resolve(value); },
+            function (err) { clearTimeout(timer); reject(err); }
+          );
+        });
+      }
+
+      function fetchWrite(base, action, id) {
+        return fetch(base + "/whitelist", {
+          method: "POST",
+          cache: "no-store",
+          credentials: "omit",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            Authorization: "Bearer " + DIAG.token,
+          },
+          body: JSON.stringify({ action: action, id: id }),
+        }).then(function (resp) {
+          return resp.text().then(function (text) {
+            var parsed = null;
+            try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
+            if (!resp.ok) {
+              var msg = (parsed && (parsed.message || parsed.error)) || (text || "").slice(0, 140);
+              var err = new Error("HTTP " + resp.status + " " + msg);
+              err.status = resp.status;
+              throw err;
+            }
+            // 框架的「未找到该路由」也是 HTTP 200，必须按业务状态判失败，
+            // 否则页面会把失败当成功，连兜底通道都不会走。
+            if (!parsed) throw new Error("接口返回的不是 JSON：" + (text || "").slice(0, 140));
+            if (parsed.status && parsed.status !== "ok") {
+              throw new Error(parsed.message || "插件接口返回失败");
+            }
+            return parsed;
+          });
+        });
+      }
+
+      function bridgeWrite(action, id) {
+        var b = window.AstrBotPluginView || window.AstrBotPluginPage;
+        if (!b || typeof b.apiPost !== "function") {
+          return Promise.reject(new Error("bridge 对象不存在"));
+        }
+        return withTimeout(
+          Promise.resolve(b.ready ? b.ready() : null),
+          8000,
+          "bridge.ready() 8 秒没回来"
+        ).then(function () {
+          return withTimeout(
+            b.apiPost("whitelist", { action: action, id: id }),
+            8000,
+            "桥接(POST) 8 秒无响应"
+          );
+        });
+      }
+
+      function postAction(action, id) {
+        var base = pluginApiBase();
+        DIAG.apiBase = base;
+        if (!base) {
+          return Promise.reject(new Error("页面地址里认不出插件名，无法写白名单"));
+        }
+
+        // 兜底通道：交给父页面 bridge 代发，不需要页面自己带令牌
+        function viaBridge() {
+          DIAG.bridgeState = "改用 bridge 中…";
+          log("bridge -> whitelist " + action + " " + id);
+          return bridgeWrite(action, id).then(
+            function (resp) {
+              DIAG.bridgeState = "bridge 成功：" + JSON.stringify(resp).slice(0, 120);
+              log("bridge <- 成功");
+              return resp;
+            },
+            function (err) {
+              var why = (err && err.message) || String(err);
+              DIAG.bridgeState = "bridge 失败：" + why;
+              log("bridge ✗ " + why);
+              throw err;
+            }
+          );
+        }
+
+        if (!DIAG.token) {
+          log("页面 URL 里没有令牌，直接走 bridge");
+          return viaBridge();
+        }
+
+        DIAG.bridgeState = "直连接口中…";
+        log("POST -> " + base + "/whitelist " + action + " " + id);
+        return fetchWrite(base, action, id).then(
+          function (resp) {
+            DIAG.bridgeState = "直连接口成功：" + JSON.stringify(resp).slice(0, 120);
+            log("POST <- 成功");
+            return resp;
+          },
+          function (err) {
+            var why = (err && err.message) || String(err);
+            DIAG.bridgeState = "直连失败：" + why + " → 改用 bridge";
+            log("POST ✗ " + why);
+            return viaBridge().catch(function (err2) {
+              var why2 = (err2 && err2.message) || String(err2);
+              DIAG.bridgeState = "直连失败（" + why + "），bridge 也失败（" + why2 + "）";
+              throw new Error("直连: " + why + " ／ bridge: " + why2);
+            });
+          }
+        );
+      }
+
+      function whitelistOf(resp) {
+        var data = (resp && resp.data) || resp || {};
+        var ids = data && data.whitelist;
+        return Array.isArray(ids) ? ids.map(String) : null;
+      }
+
+      function changedOf(resp) {
+        var data = (resp && resp.data) || resp || {};
+        return data ? data.changed : undefined;
+      }
+
+      // 用接口返回的新名单原地更新表格（不用等 data.js 重写）
+      function applyWhitelist(ids) {
+        var payload = JSON.parse(JSON.stringify(window.__GATE_PAYLOAD__ || {}));
+        var rows = payload.sessions || [];
+        rows.forEach(function (row) {
+          row.whitelisted = ids.indexOf(String(row.openid)) >= 0;
+        });
+        payload.whitelist = ids.slice();
+        payload.summary = payload.summary || {};
+        payload.summary.total = payload.summary.total || rows.length;
+        payload.summary.whitelisted = ids.length;
+        window.__GATE_PAYLOAD__ = payload;
+        return payload;
+      }
+
+      // 后台重读 data.js，把昵称、消息数等最新数据补上（失败不影响已确认的写入）
+      function refreshDataQuietly() {
+        loadData()
+          .then(function (payload) { render(payload); renderDiag(); })
+          .catch(function (err) {
+            DIAG.lastError = "刷新数据失败：" + ((err && err.message) || err);
+            renderDiag();
+          });
+      }
+
+      // 重读 data.js 核对白名单有没有变：只在两条通道都报错时用 ——
+      // 响应可能丢了，但写其实已经生效。
+      function pollForChange(action, id, waitMs) {
+        var deadline = Date.now() + waitMs;
+        function attempt() {
+          return loadData().then(function (payload) {
+            var after = (payload && payload.whitelist) || [];
+            var done = action === "add" ? after.indexOf(id) >= 0 : after.indexOf(id) < 0;
+            if (done || Date.now() >= deadline) return { payload: payload, changed: done };
+            return new Promise(function (resolve) { setTimeout(resolve, 700); }).then(attempt);
+          });
+        }
+        return attempt();
+      }
+
+      function mutate(action, id, btn, onSuccess) {
+        if (!id) return;
+        btn.disabled = true;
+        hideBanner();
+        postAction(action, id).then(
+          function (resp) {
+            var ids = whitelistOf(resp);
+            var changed = changedOf(resp);
+            var expectPresent = action === "add";
+            var applied = ids
+              ? (ids.indexOf(String(id)) >= 0) === expectPresent
+              : changed !== false;
+            log("接口返回：" + (applied ? "已生效" : "说成功但名单不对"));
+            if (applied) {
+              if (ids) {
+                render(applyWhitelist(ids));
+                refreshDataQuietly();
+              }
+              hideBanner();
+              if (typeof onSuccess === "function") onSuccess();
+            } else {
+              showBanner(
+                "白名单没变化 —— 写操作没成功",
+                true,
+                "接口说成功，但名单里" + (expectPresent ? "没有" : "还有") + "这个 ID：" + id
+              );
+            }
+            btn.disabled = false;
+            renderDiag();
+          },
+          function (err) {
+            var why = (err && err.message) || String(err);
+            DIAG.lastError = why;
+            log("两条通道都失败，重读 data.js 核对");
+            pollForChange(action, id, 12000).then(
+              function (res) {
+                render(res.payload || {});
+                renderDiag();
+                if (res.changed) {
+                  hideBanner();
+                  log("接口报错但白名单已变，按成功处理");
+                  if (typeof onSuccess === "function") onSuccess();
+                } else {
+                  showBanner("白名单没变化 —— 写操作没成功", true, why);
+                }
+                btn.disabled = false;
+              },
+              function (err2) {
+                btn.disabled = false;
+                DIAG.lastError = (err2 && err2.message) || String(err2);
+                renderDiag();
+                showBanner(
+                  "白名单没变化 —— 写操作没成功",
+                  true,
+                  why + "；重读 data.js 也失败：" + DIAG.lastError
+                );
+              }
+            );
+          }
+        );
+      }
+
+      // ══════════════ 启动 ══════════════
+      DIAG.dataUrl = dataUrl(false);
+      DIAG.hasPayload = !!window.__GATE_PAYLOAD__;
+      log("脚本启动，data.js 是否已就绪：" + (DIAG.hasPayload ? "是" : "否"));
+      renderDiag();
+
+      document.getElementById("refresh").onclick = function () {
+        hideBanner();
+        loadData()
+          .then(function (payload) { render(payload); renderDiag(); })
+          .catch(function (err) {
+            DIAG.lastError = (err && err.message) || String(err);
+            renderDiag();
+            if (DIAG.hasPayload) {
+              showBanner("刷新失败，下面是上次拿到的数据", true, DIAG.lastError);
+            } else {
+              showState("读取失败：" + DIAG.lastError, true);
+            }
+          });
+      };
+
+      document.getElementById("addBtn").onclick = function () {
+        var value = newid.value.trim();
+        if (!value) {
+          alert("请先填入 openID");
+          return;
+        }
+        mutate("add", value, this, function () { newid.value = ""; });
+      };
+      newid.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") document.getElementById("addBtn").click();
+      });
+
+      // 首屏：data.js 已经在上面同步加载过了，直接渲染
+      DIAG.apiBase = pluginApiBase();
+      var bridgeObj = window.AstrBotPluginView || window.AstrBotPluginPage;
+      DIAG.bridgeObject = bridgeObj
+        ? "有（" + Object.keys(bridgeObj).length + " 个方法）"
+        : "没有！桥接脚本没加载成功";
+      log("bridge 对象：" + DIAG.bridgeObject);
+      if (DIAG.hasPayload) {
+        render(window.__GATE_PAYLOAD__);
+        // 后台再拉一次最新版（不阻塞首屏）
+        loadData()
+          .then(function (payload) { render(payload); renderDiag(); })
+          .catch(function (err) {
+            DIAG.lastError = (err && err.message) || String(err);
+            renderDiag();
+          });
+      } else {
+        showState("还没拿到数据，点右上角「刷新」重试（后端每 45 秒会重写一次数据文件）", false);
+        loadData()
+          .then(function (payload) { render(payload); renderDiag(); })
+          .catch(function (err) {
+            DIAG.lastError = (err && err.message) || String(err);
+            renderDiag();
+            showState("读取失败：" + DIAG.lastError, true);
+          });
+      }
+    </script>
+  </body>
+</html>
