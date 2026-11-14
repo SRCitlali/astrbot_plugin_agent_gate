@@ -1,0 +1,238 @@
+{
+  "whitelist_enabled": {
+    "type": "bool",
+    "description": "白名单开关：关闭后不再检查名单，精力也一并停用",
+    "default": true
+  },
+  "energy_enabled": {
+    "type": "bool",
+    "description": "精力开关：关闭后名单内的人可以一直聊，不会累",
+    "default": true
+  },
+  "whitelist": {
+    "type": "object",
+    "description": "[白名单设置] 谁能用这台机器人",
+    "hint": "名单外的人不分说话还是敲指令，一律拦下，只回一句你设定的话。",
+    "items": {
+      "entries": {
+        "type": "list",
+        "description": "谁可以用：用户 ID、群 ID、会话 ID 都写在这里，一行一个",
+        "hint": "命中任意一条就放行。写用户 ID → 这个人在哪都能用；写群 ID → 这个群里所有人能用；写会话 ID → 只有那个会话能用。私聊里用户 ID 就是会话 ID，填一次即可。也支持带平台前缀的写法，例如 qq_official:12345。",
+        "default": []
+      },
+      "admin_exempt": {
+        "type": "bool",
+        "description": "管理员豁免：开启后管理员不受白名单限制，也不消耗精力",
+        "hint": "管理员的判定依据是 AstrBot 主配置里的 admins_id。若那里还是出厂的 astrbot，就不会有人被豁免（启动时会提醒）。",
+        "default": true
+      },
+      "recovery_messages": {
+        "type": "list",
+        "description": "名单外的人找上门时回的话（随机挑一句，留空则什么都不回）",
+        "hint": "每行一句，机器人随机挑一句发。可以写 {sender_id} 让它自动填上对方的 ID，另外还支持 {group_id} {session_id} {unified_msg_origin} {platform}。写错了也不会报错，会原样发出去。",
+        "default": [
+          "你不在本奶奶的白名单上，agent 能力一律不放行。你的 ID 是 {sender_id}，拿去给管理员报备就行",
+          "生面孔呢。想用这台机器人，先把 ID 报给管理员——你的 ID 是 {sender_id}",
+          "不认识你。{sender_id}，把这个拿去找管理员，别在这儿软磨硬泡"
+        ]
+      },
+      "block_notify": {
+        "type": "string",
+        "description": "什么时候回上面这些话",
+        "hint": "always=每次都回；on_mention=只在被 @ 或带唤醒词时回（推荐，群里不刷屏）；silent=只拦不回，什么都不说",
+        "default": "on_mention",
+        "enum": ["always", "on_mention", "silent"]
+      },
+      "block_cooldown_seconds": {
+        "type": "int",
+        "description": "同一个会话两次回话至少隔多少秒",
+        "hint": "0 表示不限制。群聊建议 30~60。",
+        "default": 30
+      }
+    }
+  },
+  "energy": {
+    "type": "object",
+    "description": "[精力设置] 名单内的人的耐心值",
+    "hint": "白名单内的人每收到一次回复就消耗精力，聊得越多、回得越长越累；精力见底后暂时不理人，改为随机回一句话，之后再慢慢恢复。白名单外的人本来就被拦着，所以不消耗精力。精力是存在内存里的，重载插件或重启机器人后会重置。",
+    "items": {
+      "initial_energy": {
+        "type": "float",
+        "description": "初始精力",
+        "hint": "每个会话第一次用到时从多少开始。默认 100。",
+        "default": 100.0
+      },
+      "max_energy": {
+        "type": "float",
+        "description": "精力上限",
+        "hint": "休息恢复时不会超过这个数。默认 100。",
+        "default": 100.0
+      },
+      "min_energy": {
+        "type": "float",
+        "description": "精力最低能跌到多少",
+        "hint": "回复扣精力时不会低于这个数。默认 -100，只作为扣能地板；能不能继续聊看的是精力有没有大于 0。",
+        "default": -100.0
+      },
+      "recovery_per_second": {
+        "type": "float",
+        "description": "每秒恢复多少精力",
+        "hint": "默认 0.6，也就是回满一次基础消耗大约要 24 秒。",
+        "default": 0.6
+      },
+      "base_reply_cost": {
+        "type": "float",
+        "description": "每次回复固定消耗",
+        "hint": "只要回复了一次就扣这么多。默认 14。",
+        "default": 14.0
+      },
+      "reply_cost_per_character": {
+        "type": "float",
+        "description": "每个字额外消耗",
+        "hint": "按最终回复内容的字数扣。默认每字 0.12。",
+        "default": 0.12
+      },
+      "messages": {
+        "type": "list",
+        "description": "精力耗尽时随机回一句（留空则完全不回）",
+        "hint": "每行一句，机器人随机挑一句发。是否真的发出去仍然受白名单设置里的回话策略和冷却时间约束。",
+        "default": [
+          "……累了，今天不想搭理人。",
+          "别喊了，本奶奶现在没力气陪你玩。",
+          "精力见底了，改天再说吧。"
+        ]
+      }
+    }
+  },
+  "defense": {
+    "type": "object",
+    "description": "[告状与冷静期] 被骂了就告状，并让那个人安静一会儿",
+    "hint": "在群聊/私聊里被辱骂、人身攻击、威胁时，主 LLM 可以调用 report_harassment 工具：把证据写进 JSONL、私聊报告给开发者、并让这个人进入冷静期（期间他的消息一律不回 LLM）。也支持管理员手动 /冷静 @人 分钟。冷静期状态存在插件数据目录，重启后仍然有效。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "告状与冷静期开关",
+        "hint": "关掉后不注册工具生效、/冷静 指令也不执行。",
+        "default": true
+      },
+      "dry_run": {
+        "type": "bool",
+        "description": "演练模式：只记录和告警，不真的封人",
+        "hint": "刚启用时建议先开一天，看看模型判断准不准，再关掉。",
+        "default": false
+      },
+      "test_mode": {
+        "type": "bool",
+        "description": "测试后门：用户明确要求测试时，允许工具直接模拟告状",
+        "hint": "开启后，用户说「测试一下告状工具」「假装被冒犯再告状」时，模型可以传 test=true 直接调用：证据标【测试】、只告警不封人、不消耗投诉与告警配额。不想留后门就关掉。",
+        "default": true
+      },
+      "hint_enabled": {
+        "type": "bool",
+        "description": "每轮请求都往系统提示里补一句「被骂要先告状」",
+        "hint": "光靠工具描述，强 persona 的模型常常选择直接回怼而不调用工具。开着能明显提高触发率，代价是每轮多几十个 token。规则里只写“辱骂/人身攻击/威胁”这类笼统描述，不包含任何脏词，是否调用由模型自己判断。",
+        "default": true
+      },
+      "alert_openid": {
+        "type": "string",
+        "description": "告警对象 openid（被骂时 @ 你、私聊你）",
+        "hint": "留空也能用：让开发者本人对机器人发一次 /冷静绑定 就自动记到「那个机器人」名下。多机器人时每个机器人的 openid 不同，/冷静绑定 会按机器人分别保存；这里填的值是全局兜底（哪个机器人没单独绑定时使用）。QQ 官方只有 openid，没有 QQ 号。",
+        "default": ""
+      },
+      "alert_umo": {
+        "type": "string",
+        "description": "告警对象的私聊 UMO（可选，一般不用填）",
+        "hint": "留空时按「平台实例ID:FriendMessage:<openid>」自动拼。多机器人且自动判断不出用哪个机器人时，才需要手填成「机器人实例:FriendMessage:openid」。非 QQ 官方平台想收私聊告警也用它。",
+        "default": ""
+      },
+      "alert_at_in_group": {
+        "type": "bool",
+        "description": "群聊里被骂时，单独发一条 @ 告警对象的消息",
+        "hint": "回复和 @ 通知拆成两条消息（QQ 会把 @ 排到气泡开头，合在一起像在骂你）。走被动回复窗口，不占 QQ 主动消息配额。告警对象不在那个群里时，QQ 可能忽略这个 @。",
+        "default": true
+      },
+      "alert_dm": {
+        "type": "bool",
+        "description": "额外私聊一份完整证据给告警对象",
+        "hint": "受 QQ 官方主动消息配额限制，发不出去只会记日志，不影响正常回复。",
+        "default": true
+      },
+      "messages": {
+        "type": "list",
+        "description": "冷静期内这个人找上门时回的话（随机一句，留空则完全不理）",
+        "hint": "支持 {minutes} 占位符（剩余分钟数），也会按「冷静期提示间隔」限频，不会刷屏。",
+        "default": [
+          "……不想说话。",
+          "我先安静一会儿。",
+          "现在不聊这个。"
+        ]
+      },
+      "cooldown_minutes": {
+        "type": "int",
+        "description": "/冷静 手动封人时的默认分钟数",
+        "hint": "默认 10 分钟。指令里写了数字就用指令里的。",
+        "default": 10
+      },
+      "ban_minutes_moderate": {
+        "type": "int",
+        "description": "中度攻击的冷静分钟数",
+        "hint": "默认 10 分钟。LLM 判定 moderate 时使用。",
+        "default": 10
+      },
+      "ban_minutes_severe": {
+        "type": "int",
+        "description": "严重攻击的冷静分钟数",
+        "hint": "默认 60 分钟。LLM 判定 severe 时使用。",
+        "default": 60
+      },
+      "max_ban_minutes": {
+        "type": "int",
+        "description": "单次冷静期上限（分钟）",
+        "hint": "默认 1440（一天）。手动指令与自动判定都受这个上限约束。",
+        "default": 1440
+      },
+      "strikes_window_hours": {
+        "type": "int",
+        "description": "投诉计数的回看窗口（小时）",
+        "hint": "默认 24 小时。窗口内累计的投诉次数决定要不要升级。",
+        "default": 24
+      },
+      "strikes_before_ban": {
+        "type": "int",
+        "description": "第几次投诉开始封人",
+        "hint": "默认 2：第一次只告警，第二次起升一档真的封。填 1 表示第一次就封。",
+        "default": 2
+      },
+      "alert_dedupe_seconds": {
+        "type": "int",
+        "description": "同一个人两次告警至少隔多少秒",
+        "hint": "默认 900 秒（15 分钟），防止被同一个人反复触发刷屏。",
+        "default": 900
+      },
+      "max_alerts_per_hour": {
+        "type": "int",
+        "description": "全局每小时最多发出多少条告警",
+        "hint": "默认 6。超了只写日志和证据文件，不再 @/私聊打扰你。",
+        "default": 6
+      },
+      "max_bans_per_hour": {
+        "type": "int",
+        "description": "全局每小时最多执行多少次自动封禁",
+        "hint": "默认 3。超了只告警不封人，防止模型抽风把人全封了。",
+        "default": 3
+      },
+      "notify_cooldown_seconds": {
+        "type": "int",
+        "description": "冷静期内同一个人多久才回一次话",
+        "hint": "默认 300 秒。其余消息静默拦下，避免变成互相刷屏。",
+        "default": 300
+      },
+      "ban_list_cap": {
+        "type": "int",
+        "description": "冷静期名单最多保留多少人",
+        "hint": "默认 200，超出时优先保留解封时间最晚的，防止被刷爆。",
+        "default": 200
+      }
+    }
+  }
+}
